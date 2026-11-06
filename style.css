@@ -288,3 +288,8 @@ body:not(.is-admin) .host-only { display: none !important; }
   .end-btn { padding: 8px 10px; font-size: 13px; }
   .meet-top .mt-title { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
+@media (max-width: 360px) {
+  .toolbar { padding: 4px 4px; gap: 2px; }
+  .tb { padding: 8px 2px; }
+  .end-btn { padding: 8px 8px; font-size: 12px; }
+}
