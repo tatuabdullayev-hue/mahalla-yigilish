@@ -255,7 +255,8 @@ function stateOf(p) {
   const a = p.attributes || {};
   return { mic: p.isMicrophoneEnabled, cam: p.isCameraEnabled, sharing: p.isScreenShareEnabled, hand: a.hand === '1', recording: a.rec === '1' };
 }
-function isHostP(p) { try { return !!JSON.parse(p.metadata || '{}').host; } catch { return false; } }
+// Host belgisi faqat server bergan identity'dan (h_...) — qatnashchi o'zi o'zgartira olmaydi
+function isHostP(p) { return String(p?.identity || '').startsWith('h_'); }
 function syncRoster() {
   if (!room) return;
   const seen = new Set();
