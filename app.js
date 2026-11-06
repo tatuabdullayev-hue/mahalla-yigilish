@@ -52,13 +52,16 @@ function decodeCode(code) {
     return JSON.parse(decodeURIComponent(escape(atob(body))));
   } catch { return null; }
 }
-const linkOf = (code) => `${location.origin}${BASE_PATH}?m=${code}`;
+const keyFor = (r) => (store.get('keys') || {})[r] || null;
+function saveKey(r, k) { const h = store.get('keys') || {}; h[r] = k; store.set('keys', h); }
+// E2EE kaliti havolaning # qismida — u hech qachon serverga yuborilmaydi
+const linkOf = (code) => { const m = decodeCode(code), k = m && keyFor(m.r); return `${location.origin}${BASE_PATH}?m=${code}${k ? '#k=' + k : ''}`; };
 async function api(path, body) {
   try {
     const r = await fetch(`${API_BASE}/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    return r.ok ? j : { error: j.error || `Xatolik (${r.status})` };
-  } catch { return { error: "Internet aloqasi yo'q" }; }
+    return r.ok ? j : { error: j.error || `Xatolik (${r.status})`, status: r.status };
+  } catch { return { error: "Internet aloqasi yo'q", status: 0 }; }
 }
 async function copy(text, msg = 'Nusxa olindi') {
   try { await navigator.clipboard.writeText(text); toast(msg); } catch { prompt('Nusxalang:', text); }
@@ -112,7 +115,7 @@ function renderMine() {
   $('#my-box').classList.toggle('hidden', !list.length);
   $('#my-list').innerHTML = list.map((x) => `
     <li data-code="${esc(x.code)}">
-      <div class="who"><b>${esc(x.t)}</b><small>${fmtWhen(x.s)}${hostKeyFor(x.r) ? ' · host' : ''}</small></div>
+      <div class="who"><b>${esc(x.t)}</b><small>${fmtWhen(x.s)}${hostKeyFor(x.r) ? ' · host' : ''}${decodeCode(x.code)?.e ? ' · 🔐' : ''}</small></div>
       <button class="btn sm" data-a="copy" title="Havolani nusxalash">${icon('i-send')}</button>
       <button class="btn sm primary" data-a="open">Kirish</button>
     </li>`).join('');
@@ -144,10 +147,16 @@ $('#form-create').onsubmit = async (e) => {
   if (later && !(startAt > 0)) return ($('#create-error').textContent = 'Sana va vaqtni tanlang');
   store.set('name', name);
   $('#btn-create').disabled = true; $('#create-error').textContent = '';
-  const r = await api('create', { title, startAt });
+  const e2ee = $('#c-e2ee').checked;
+  if (e2ee && !(window.RTCRtpScriptTransform || window.RTCRtpSender?.prototype?.createEncodedStreams)) {
+    $('#btn-create').disabled = false;
+    return ($('#create-error').textContent = "Bu brauzer shifrlashni qo'llab-quvvatlamaydi. Chrome, Edge yoki Safari'ning yangi versiyasidan foydalaning.");
+  }
+  const r = await api('create', { title, startAt, waiting: $('#c-waiting').checked, e2ee });
   $('#btn-create').disabled = false;
   if (r.error) return ($('#create-error').textContent = r.error);
   saveHostKey(r.room, r.host);
+  if (r.e2ee) saveKey(r.room, [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join(''));
   saveMine({ code: r.code, r: r.room, t: r.title, s: r.startAt });
   showCreated(r.code);
 };
@@ -162,10 +171,11 @@ $('#form-open').onsubmit = (e) => {
 // ================= YARATILDI =================
 function showCreated(code) {
   const m = decodeCode(code);
-  ctx = { code, m, host: hostKeyFor(m.r) };
+  ctx = { code, m, host: hostKeyFor(m.r), key: keyFor(m.r) };
   history.replaceState(null, '', BASE_PATH);
   $('#cr-title').textContent = m.t;
-  $('#cr-time').textContent = m.s > Date.now() + 60e3 ? `Boshlanish vaqti: ${fmtWhen(m.s)}` : 'Hozir boshlanadi';
+  $('#cr-time').textContent = (m.s > Date.now() + 60e3 ? `Boshlanish vaqti: ${fmtWhen(m.s)}` : 'Hozir boshlanadi')
+    + (m.w ? ' · Kutish zali yoqiq' : '') + (m.e ? ' · 🔐 Uchidan-uchiga shifrlangan' : '');
   const link = linkOf(code);
   $('#cr-link').textContent = link;
   const text = `"${m.t}" video yig'ilishiga taklif qilinasiz. Vaqti: ${fmtWhen(m.s)}. Havolani bosing:`;
@@ -181,7 +191,7 @@ $('#cr-home').onclick = goHome;
 
 // ================= HAVOLA ORQALI KIRISH / KUTISH =================
 function goHome() {
-  clearTimeout(waitTimer); clearInterval(countInt); waiting = false;
+  clearTimeout(waitTimer); clearInterval(countInt); waiting = false; leaveLobby();
   history.replaceState(null, '', BASE_PATH);
   ctx = null;
   $('#c-name').value = store.get('name') || '';
@@ -191,9 +201,9 @@ function goHome() {
 function openMeeting(code, auto = false, manual = false) {
   const m = decodeCode(code);
   if (!m) return goHome();
-  clearTimeout(waitTimer); clearInterval(countInt); waiting = false;
-  ctx = { code, m, host: hostKeyFor(m.r) };
-  history.replaceState(null, '', `${BASE_PATH}?m=${code}`);
+  clearTimeout(waitTimer); clearInterval(countInt); waiting = false; leaveLobby();
+  ctx = { code, m, host: hostKeyFor(m.r), key: keyFor(m.r) };
+  history.replaceState(null, '', `${BASE_PATH}?m=${code}${ctx.key ? '#k=' + ctx.key : ''}`);
   $('#j-title').textContent = m.t;
   $('#j-time').textContent = m.s > Date.now() ? `Boshlanish: ${fmtWhen(m.s)}` : `Boshlangan: ${fmtWhen(m.s)}`;
   $('#j-name').value = store.get('name') || '';
@@ -202,36 +212,79 @@ function openMeeting(code, auto = false, manual = false) {
   $('#form-join').classList.remove('hidden');
   $('#j-btn').textContent = ctx.host ? "Yig'ilishni boshlash" : "Qo'shilish";
   show('#screen-join');
+  if (m.e && !ctx.key) { $('#j-error').textContent = "Bu yig'ilish shifrlangan, lekin havolada kalit yo'q. Tashkilotchidan to'liq havolani so'rang."; return; }
   if (!manual && $('#j-name').value) tryJoin();
 }
 $('#j-home').onclick = goHome;
 $('#form-join').onsubmit = (e) => { e.preventDefault(); unlockAudio(); store.set('name', $('#j-name').value.trim()); tryJoin(); };
 
-let joining = false, waiting = false, lastTry = 0, clockSkew = 0;
+let joiningCtx = null, waiting = false, lastTry = 0, clockSkew = 0; // joiningCtx: qaysi yig'ilishga so'rov ketmoqda
 async function tryJoin() {
   clearTimeout(waitTimer);
-  if (joining || inMeeting || !ctx) return;
+  if (joiningCtx === ctx || inMeeting || !ctx) return;
   const name = $('#j-name').value.trim() || store.get('name');
   if (!name) return;
   const myCtx = ctx;
-  joining = true; lastTry = Date.now();
+  joiningCtx = myCtx; lastTry = Date.now();
   $('#j-btn').disabled = true; $('#j-error').textContent = '';
   const r = await api('join', { code: myCtx.code, name, host: myCtx.host, cid: deviceId() });
-  joining = false;
+  if (joiningCtx === myCtx) joiningCtx = null;
   $('#j-btn').disabled = false;
   if (ctx !== myCtx || inMeeting) return; // foydalanuvchi boshqa sahifaga o'tib ketgan
   if (r.error) {
     $('#j-error').textContent = r.error;
-    // Kutish paytida internet uzilsa — to'xtab qolmasdan qayta urinamiz
-    if (waiting || /Internet|Xatolik \(5/.test(r.error)) waitTimer = setTimeout(tryJoin, 10000);
+    // Internet uzilishi / server xatosi / cheklov — to'xtab qolmasdan qayta urinamiz; rad javoblarida (403/410/423) — yo'q
+    if (r.status === 0 || r.status >= 500 || r.status === 429) waitTimer = setTimeout(tryJoin, r.status === 429 ? 15000 : 10000);
+    else { waiting = false; clearInterval(countInt); $('#j-wait').classList.add('hidden'); $('#form-join').classList.add('hidden'); }
     return;
   }
   if (r.wait) { if (r.now) clockSkew = r.now - Date.now(); return showWaiting(r.startAt); }
+  if (r.lobby) return enterLobby(r);
+  leaveLobby();
   waiting = false;
   clearInterval(countInt);
   if (!ctx.host) saveMine({ code: ctx.code, r: ctx.m.r, t: ctx.m.t, s: ctx.m.s });
   enterMeeting(r, name);
 }
+// ---------------- Kutish zali (mehmon tomoni) ----------------
+let lobbyRoom = null, lobbyPoll = null;
+async function enterLobby(r) {
+  waiting = false; clearInterval(countInt);
+  $('#form-join').classList.add('hidden');
+  const w = $('#j-wait'); w.classList.remove('hidden'); w.classList.add('lobby-wait');
+  w.innerHTML = `<b>Kutish zalidasiz</b><div class="spin"></div>${r.hostIn ? "Tashkilotchi sizni tez orada yig'ilishga qo'shadi." : "Tashkilotchi hali kirmagan. U kirgach, sizni qo'shadi."} Sahifani yopmang.`;
+  if (lobbyRoom) return;
+  const myCtx = ctx;
+  const lr = new LK.Room();
+  lobbyRoom = lr;
+  const admitted = () => {
+    if (lobbyRoom !== lr || lr.localParticipant.attributes?.admitted !== '1') return;
+    clearInterval(lobbyPoll); chime(true); tryJoin();
+  };
+  lr.on(LK.RoomEvent.ParticipantAttributesChanged, admitted);
+  lr.on(LK.RoomEvent.Disconnected, (reason) => {
+    if (lobbyRoom !== lr) return;
+    lobbyRoom = null; clearInterval(lobbyPoll);
+    if (ctx !== myCtx || inMeeting) return;
+    const R = LK.DisconnectReason || {};
+    $('#j-wait').classList.add('hidden');
+    if (reason === R.PARTICIPANT_REMOVED) $('#j-error').textContent = "Tashkilotchi sizni yig'ilishga qabul qilmadi.";
+    else if (reason === R.ROOM_DELETED) $('#j-error').textContent = "Yig'ilish yakunlandi.";
+    else waitTimer = setTimeout(tryJoin, 4000);
+  });
+  try { await lr.connect(r.url, r.token); }
+  catch { lobbyRoom = null; waitTimer = setTimeout(tryJoin, 8000); return; }
+  clearInterval(lobbyPoll);
+  lobbyPoll = setInterval(admitted, 2000); // zaxira: hodisa kelmasa ham
+  admitted();
+}
+function leaveLobby() {
+  clearInterval(lobbyPoll);
+  const lr = lobbyRoom; lobbyRoom = null;
+  lr?.removeAllListeners(); lr?.disconnect().catch(() => {});
+  $('#j-wait').classList.remove('lobby-wait');
+}
+
 function showWaiting(startAt) {
   waiting = true;
   $('#form-join').classList.add('hidden');
@@ -257,12 +310,15 @@ function stateOf(p) {
 }
 // Host belgisi faqat server bergan identity'dan (h_...) — qatnashchi o'zi o'zgartira olmaydi
 function isHostP(p) { return String(p?.identity || '').startsWith('h_'); }
+// Ism qulfi: qatnashchi yig'ilish ichida ismini o'zgartirsa ham, kirgandagi ismi ko'rsatiladi
+const nameLock = new Map();
+const nameOf = (p) => { if (!nameLock.has(p.identity)) nameLock.set(p.identity, p.name || 'Mehmon'); return nameLock.get(p.identity); };
 function syncRoster() {
   if (!room) return;
   const seen = new Set();
   for (const p of [room.localParticipant, ...room.remoteParticipants.values()]) {
     seen.add(p.identity);
-    roster.set(p.identity, { name: p.name || p.identity, host: isHostP(p), state: stateOf(p) });
+    roster.set(p.identity, { name: nameOf(p), host: isHostP(p), state: stateOf(p) });
   }
   for (const id of [...roster.keys()]) if (!seen.has(id)) { roster.delete(id); $(`#tile-${CSS.escape(id)}`)?.remove(); if (pinned === id) pinned = null; }
 }
@@ -270,6 +326,7 @@ const myState = () => roster.get(me?.identity)?.state || {};
 
 async function enterMeeting(r, name) {
   me = { identity: r.identity, name, isHost: r.isHost };
+  nameLock.clear(); roomMeta = {}; lobbyKnown = new Set();
   if (r.isHost) saveHostKey(ctx.m.r, ctx.host);
   inMeeting = true; leaving = false;
   document.body.classList.toggle('is-admin', r.isHost);
@@ -287,7 +344,15 @@ async function enterMeeting(r, name) {
   }, 1000);
 
   const E = LK.RoomEvent;
+  let e2ee;
+  if (ctx.m.e) {
+    const keyProvider = new LK.ExternalE2EEKeyProvider();
+    await keyProvider.setKey(ctx.key);
+    e2ee = { keyProvider, worker: new Worker(`${BASE_PATH}vendor/livekit-client-2.23.0.e2ee.worker.js`) };
+  }
+  $('#e2ee-ind').classList.toggle('hidden', !ctx.m.e);
   room = new LK.Room({
+    ...(e2ee ? { e2ee } : {}),
     adaptiveStream: true, dynacast: true,
     videoCaptureDefaults: { resolution: LK.VideoPresets.h720.resolution },
     audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -295,8 +360,8 @@ async function enterMeeting(r, name) {
   });
   const refresh = () => { syncRoster(); renderAll(); };
   room
-    .on(E.ParticipantConnected, (p) => { refresh(); chime(true); toast(`${p.name} qo'shildi`, 2000); })
-    .on(E.ParticipantDisconnected, (p) => { refresh(); chime(false); toast(`${p.name} chiqib ketdi`, 2000); })
+    .on(E.ParticipantConnected, (p) => { refresh(); chime(true); toast(`${nameOf(p)} qo'shildi`, 2000); })
+    .on(E.ParticipantDisconnected, (p) => { refresh(); chime(false); toast(`${nameOf(p)} chiqib ketdi`, 2000); })
     .on(E.TrackSubscribed, (track, _pub, p) => {
       if (track.kind === 'audio') { const el = track.attach(); el.dataset.id = p.identity; $('#lk-audio').appendChild(el); }
       refreshTile(p.identity); refresh();
@@ -311,7 +376,7 @@ async function enterMeeting(r, name) {
     .on(E.LocalTrackPublished, () => { refreshTile(me.identity); refresh(); })
     .on(E.LocalTrackUnpublished, () => { refreshTile(me.identity); refresh(); })
     .on(E.ParticipantAttributesChanged, (changed, p) => {
-      if (changed.hand === '1' && p.identity !== me.identity) toast(`✋ ${p.name} qo'l ko'tardi`);
+      if (changed.hand === '1' && p.identity !== me.identity) toast(`✋ ${nameOf(p)} qo'l ko'tardi`);
       refresh();
     })
     .on(E.ActiveSpeakersChanged, (sp) => {
@@ -319,12 +384,17 @@ async function enterMeeting(r, name) {
       if (s && s !== activeSpeaker && Date.now() - lastSwitch > 1200) { activeSpeaker = s; lastSwitch = Date.now(); renderTiles(); }
     })
     .on(E.DataReceived, onData)
+    .on(E.RoomMetadataChanged, (md) => applyRoomMeta(md))
+    .on(E.EncryptionError, () => toast("Shifrlash xatosi: havoladagi kalitni tekshiring", 5000))
     .on(E.AudioPlaybackStatusChanged, () => { if (!room.canPlaybackAudio) $('#unlock').classList.remove('hidden'); })
     .on(E.Reconnecting, () => toast('Aloqa sustlashdi, qayta ulanmoqda…', 5000))
     .on(E.Reconnected, () => toast('Qayta ulandi', 1500))
     .on(E.Disconnected, (reason) => onDisconnected(reason));
 
-  try { await room.connect(r.url, r.token); }
+  try {
+    if (e2ee) await room.setE2EEEnabled(true);
+    await room.connect(r.url, r.token);
+  }
   catch (e) {
     inMeeting = false; room?.removeAllListeners(); room = null;
     openMeeting(ctx.code, false, true); // avtomatik takrorlamaymiz — foydalanuvchi o'zi bosadi
@@ -332,6 +402,8 @@ async function enterMeeting(r, name) {
     return;
   }
   autoRejoins = 0;
+  applyRoomMeta(room.metadata);
+  if (me.isHost) { pollLobby(); clearInterval(lobbyHostInt); lobbyHostInt = setInterval(pollLobby, 3000); }
   syncRoster(); renderAll();
   try { await room.localParticipant.setMicrophoneEnabled(true); } catch { toast("Mikrofonga ruxsat berilmadi"); }
   try { await room.localParticipant.setCameraEnabled(true); } catch { toast("Kameraga ruxsat berilmadi"); }
@@ -375,6 +447,7 @@ async function onDisconnected(reason) {
 }
 function cleanupMeeting() {
   if (recorder) stopRecording();
+  clearInterval(lobbyHostInt); lobbyList = []; renderLobby();
   inMeeting = false;
   clearInterval(timerInt); clearInterval(levelInt);
   room?.removeAllListeners();
@@ -417,7 +490,7 @@ function send(topic, data, to) {
 function onData(payload, p, _kind, topic) {
   let d; try { d = JSON.parse(dec.decode(payload)); } catch { return; }
   if (!p) return;
-  if (topic === 'chat') addChat({ ...d, from: p.identity, name: p.name });
+  if (topic === 'chat') addChat({ ...d, from: p.identity, name: nameOf(p) });
   else if (topic === 'react') showReaction(p.identity, d.emoji);
   else if (topic === 'cmd' && isHostP(p)) {
     if (d.cmd === 'askUnmute' && !myState().mic) modal("Tashkilotchi ovozingizni yoqishingizni so'rayapti", [{ label: 'Ovozni yoqish', cls: 'primary', value: 1 }, { label: 'Hozir emas', value: 0 }]).then((v) => v && setMic(true));
@@ -490,6 +563,68 @@ addEventListener('resize', () => inMeeting && renderTiles());
 $('#btn-view').onclick = () => { view = view === 'speaker' ? 'gallery' : 'speaker'; pinned = null; renderTiles(); };
 $('#btn-full').onclick = () => { document.fullscreenElement ? document.exitFullscreen() : $('#screen-meeting').requestFullscreen?.().catch(() => {}); };
 
+// ---------------- Xona sozlamalari (qulf, kutish zali) ----------------
+let roomMeta = {}, lobbyHostInt = null, lobbyList = [], lobbyKnown = new Set();
+function applyRoomMeta(md) {
+  try { roomMeta = JSON.parse(md || '{}') || {}; } catch { roomMeta = {}; }
+  $('#lock-ind').classList.toggle('hidden', !roomMeta.locked);
+}
+const waitingOn = () => roomMeta.waiting ?? !!ctx?.m?.w;
+async function setSetting(patch) {
+  const r = await api('host', { code: ctx.code, host: ctx.host, action: 'settings', ...patch });
+  if (r.error) return toast(r.error);
+  applyRoomMeta(JSON.stringify(r.meta));
+  if ('locked' in patch) toast(patch.locked ? "🔒 Yig'ilish qulflandi — yangi odam kira olmaydi" : "Yig'ilish qulfdan chiqarildi");
+  if ('waiting' in patch) toast(patch.waiting ? 'Kutish zali yoqildi' : "Kutish zali o'chirildi — havolasi borlar to'g'ridan-to'g'ri kiradi");
+}
+$('#btn-sec').onclick = (e) => {
+  e.stopPropagation();
+  openMenu([
+    { head: 'Yig\'ilish xavfsizligi' },
+    { label: `${roomMeta.locked ? '✓ ' : ''}Yig'ilishni qulflash`, sel: !!roomMeta.locked, fn: () => setSetting({ locked: !roomMeta.locked }) },
+    { label: `${waitingOn() ? '✓ ' : ''}Kutish zali`, sel: waitingOn(), fn: () => setSetting({ waiting: !waitingOn() }) },
+    { hr: true },
+    { label: "Hammaning ovozini o'chirish", fn: () => $('#btn-mute-all').click() },
+  ], e.currentTarget);
+};
+async function pollLobby() {
+  if (!me?.isHost || !inMeeting) return;
+  const r = await api('host', { code: ctx.code, host: ctx.host, action: 'lobby' });
+  if (r.error || !inMeeting) return;
+  if (r.meta) applyRoomMeta(JSON.stringify(r.meta));
+  const fresh = r.lobby.filter((p) => !lobbyKnown.has(p.identity));
+  lobbyList = r.lobby; lobbyKnown = new Set(r.lobby.map((p) => p.identity));
+  if (fresh.length) {
+    chime(true);
+    toast(`🚪 ${fresh.map((p) => p.name).join(', ')} kutish zalida`, 4000);
+    if ($('#pane-people').classList.contains('hidden')) openPane('people');
+  }
+  renderLobby();
+}
+function renderLobby() {
+  const n = lobbyList.length;
+  $('#lobby-box').classList.toggle('hidden', !n || !me?.isHost);
+  $('#lobby-count').textContent = n;
+  $('#people-count').classList.toggle('wait', !!n);
+  $('#lobby-list').innerHTML = lobbyList.map((p) => `<li data-id="${esc(p.identity)}">
+      <span class="av" style="background:${colorOf(p.name)}">${esc(initials(p.name))}</span>
+      <div class="who"><b>${esc(p.name)}</b><small>kutmoqda</small></div>
+      <span class="acts"><button class="btn sm primary" data-a="admit">Qo'shish</button><button class="btn sm" data-a="deny">Rad etish</button></span>
+    </li>`).join('');
+  $$('#lobby-list button').forEach((b) => b.onclick = async () => {
+    const id = b.closest('li').dataset.id;
+    b.disabled = true;
+    const r = await api('host', { code: ctx.code, host: ctx.host, action: b.dataset.a, identity: id });
+    if (r.error) toast(r.error);
+    lobbyList = lobbyList.filter((p) => p.identity !== id); renderLobby();
+  });
+}
+$('#btn-admit-all').onclick = async () => {
+  const ids = lobbyList.map((p) => p.identity);
+  lobbyList = []; renderLobby();
+  await Promise.all(ids.map((id) => api('host', { code: ctx.code, host: ctx.host, action: 'admit', identity: id })));
+};
+
 // ---------------- Host amallari ----------------
 function hostMute(id, source) {
   const pub = participantOf(id)?.getTrackPublication(source);
@@ -497,7 +632,7 @@ function hostMute(id, source) {
 }
 async function kick(id) {
   const p = roster.get(id);
-  if (await modal(`${p?.name} ni yig'ilishdan chiqarasizmi?`, [{ label: 'Chiqarish', cls: 'red', value: 1 }, { label: 'Bekor qilish', value: 0 }])) {
+  if (await modal(`${p?.name} ni yig'ilishdan chiqarasizmi? U bu yig'ilishga qayta kira olmaydi.`, [{ label: 'Chiqarish', cls: 'red', value: 1 }, { label: 'Bekor qilish', value: 0 }])) {
     const r = await api('host', { code: ctx.code, host: ctx.host, action: 'kick', identity: id });
     if (r.error) toast(r.error);
   }
@@ -779,6 +914,8 @@ document.addEventListener('keydown', (e) => {
   const q = new URLSearchParams(location.search);
   const code = q.get('m');
   if (code && q.get('h')) { const m = decodeCode(code); if (m) saveHostKey(m.r, q.get('h')); }
+  const hk = location.hash.match(/[#&]k=([0-9a-f]{16,128})/i);
+  if (code && hk) { const m = decodeCode(code); if (m) saveKey(m.r, hk[1]); }
   if (q.has('app') || /MahallaApp/.test(navigator.userAgent)) $('#apps-card').classList.add('hidden');
   if (code && decodeCode(code)) openMeeting(code);
   else goHome();

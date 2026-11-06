@@ -9,7 +9,7 @@
   <link rel="icon" href="icon-192.png" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="style.css?v=5" />
+  <link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -55,6 +55,10 @@
             <label class="radio"><input type="radio" name="when" value="later" /> Vaqtini belgilash</label>
           </div>
           <input id="c-time" type="datetime-local" class="hidden" />
+          <div class="sec-opts">
+            <label class="radio"><input type="checkbox" id="c-waiting" checked /> Kutish zali <small class="muted">— qatnashchilarni o'zingiz qabul qilasiz (tavsiya etiladi)</small></label>
+            <label class="radio"><input type="checkbox" id="c-e2ee" /> Uchidan-uchiga shifrlash <small class="muted">— video va ovozni hatto server ham ko'ra olmaydi</small></label>
+          </div>
           <button class="btn primary big" type="submit" id="btn-create">Yig'ilish yaratish</button>
           <p id="create-error" class="error"></p>
         </form>
@@ -134,7 +138,7 @@
     <header class="meet-top">
       <div class="mt-left">
         <button class="mt-ic" id="btn-info" title="Yig'ilish ma'lumoti"><svg class="shield"><use href="#i-shield"/></svg></button>
-        <span id="rec-ind" class="rec-ind hidden">● REC</span>
+        <span id="rec-ind" class="rec-ind hidden">● REC</span><span id="lock-ind" class="badge-ind hidden" title="Yig'ilish qulflangan">🔒</span><span id="e2ee-ind" class="badge-ind hidden" title="Uchidan-uchiga shifrlangan">🔐 E2EE</span>
         <span class="mt-title" id="meet-title"></span><button class="mt-ic" id="btn-invite" title="Havolani nusxalash"><svg><use href="#i-send"/></svg></button>
       </div>
       <div class="mt-right">
@@ -149,6 +153,10 @@
       <aside id="side" class="side hidden">
         <section id="pane-people" class="pane hidden">
           <div class="pane-head"><b id="people-title">Qatnashchilar</b><button class="x" data-close="people"><svg><use href="#i-close"/></svg></button></div>
+          <div id="lobby-box" class="lobby-box hidden">
+            <div class="pane-sub"><b>Kutish zalida (<span id="lobby-count">0</span>)</b><button class="btn sm primary" id="btn-admit-all">Hammasini qo'shish</button></div>
+            <ul id="lobby-list" class="people-list"></ul>
+          </div>
           <ul id="people-list" class="people-list"></ul>
           <div class="host-only pane-actions">
             <button class="btn sm" id="btn-mute-all">Hammaning ovozini o'chirish</button>
@@ -185,6 +193,7 @@
         <button class="tb" id="btn-chat"><span class="tb-ic"><svg><use href="#i-chat"/></svg><b class="badge hidden" id="chat-badge">0</b></span><span class="tb-l">Chat</span></button>
         <button class="tb share" id="btn-share"><span class="tb-ic"><svg><use href="#i-share"/></svg></span><span class="tb-l">Ekranni ulashish</span></button>
         <button class="tb" id="btn-rec"><span class="tb-ic"><svg><use href="#i-rec"/></svg></span><span class="tb-l" id="rec-label">Yozib olish</span></button>
+        <button class="tb host-only" id="btn-sec"><span class="tb-ic"><svg><use href="#i-shield"/></svg></span><span class="tb-l">Xavfsizlik</span></button>
         <button class="tb" id="btn-react"><span class="tb-ic"><svg><use href="#i-smile"/></svg></span><span class="tb-l">Reaksiyalar</span></button>
       </div>
       <div class="tb-group end">
@@ -207,6 +216,6 @@
 
   <script src="vendor/livekit-client-2.23.0.js"></script>
   <script>window.LivekitClient || document.write('<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.umd.js"><\/script>');</script>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

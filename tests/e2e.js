@@ -25,11 +25,28 @@
     o.connect(d); o.start();
     return { video: c.captureStream(10).getVideoTracks()[0], audio: d.stream.getAudioTracks()[0], stop: () => { clearInterval(iv); o.stop(); ac.close(); } };
   }
-  async function bot(name, { cid, code = ctx.code, publish = true } = {}) {
-    const j = await api('join', { code, name, cid: cid || `bot-${name}-${Math.random().toString(36).slice(2, 10)}` });
+  // Bot: kutish zaliga tushsa, host kaliti bilan qabul qilinadi (admit=false bo'lsa — kutish zalida qoladi)
+  async function bot(name, { cid, code = ctx.code, publish = true, admit = true, hostKey = ctx?.host, e2eeKey = null } = {}) {
+    cid = cid || `bot-${name}-${Math.random().toString(36).slice(2, 10)}`;
+    let j = await api('join', { code, name, cid });
+    let lobbyRoom = null;
+    if (j.lobby) {
+      lobbyRoom = new LK.Room(); await lobbyRoom.connect(j.url, j.token);
+      if (!admit) return { name, lobbyRoom, identity: j.identity, cid, close: () => lobbyRoom.disconnect() };
+      const a = await api('host', { code, host: hostKey, action: 'admit', identity: j.identity });
+      if (a.error) throw new Error('admit: ' + a.error);
+      j = await api('join', { code, name, cid });
+      await lobbyRoom.disconnect();
+    }
     if (!j.token) throw new Error('bot tokeni yo\'q: ' + JSON.stringify(j));
-    const room = new LK.Room();
-    const b = { name, room, identity: j.identity, data: [], reason: null };
+    let opts = {};
+    if (e2eeKey) {
+      const keyProvider = new LK.ExternalE2EEKeyProvider(); await keyProvider.setKey(e2eeKey);
+      opts = { e2ee: { keyProvider, worker: new Worker(`${BASE_PATH}vendor/livekit-client-2.23.0.e2ee.worker.js`) } };
+    }
+    const room = new LK.Room(opts);
+    if (e2eeKey) await room.setE2EEEnabled(true);
+    const b = { name, room, identity: j.identity, cid, data: [], reason: null };
     room.on(LK.RoomEvent.DataReceived, (p, who, k, topic) => b.data.push({ topic, d: JSON.parse(new TextDecoder().decode(p)), from: who?.identity }));
     room.on(LK.RoomEvent.Disconnected, (r) => { b.reason = r; });
     await room.connect(j.url, j.token);
@@ -207,7 +224,7 @@
     });
 
     await t('20. Kutish: 5 daqiqa+6 soniyadan keyin boshlanadigan yig\'ilishga mehmon avtomatik qo\'shiladi', async () => {
-      const c = await api('create', { title: 'Kutish testi', startAt: Date.now() + 5 * 60e3 + 6000 });
+      const c = await api('create', { title: 'Kutish testi', startAt: Date.now() + 5 * 60e3 + 6000, waiting: false });
       localStorage.removeItem('hosts'); localStorage.setItem('name', JSON.stringify('Kutuvchi'));
       openMeeting(c.code);
       await until(() => !$('#j-wait').classList.contains('hidden') && $('#j-wait').textContent.includes('avtomatik'), 6000, 'kutish ekrani yo\'q');
@@ -218,7 +235,7 @@
     });
 
     await t('21. Kutish: host ertaroq kirsa mehmon ham kiradi', async () => {
-      const c = await api('create', { title: 'Erta', startAt: Date.now() + 3600e3 });
+      const c = await api('create', { title: 'Erta', startAt: Date.now() + 3600e3, waiting: false });
       openMeeting(c.code);
       await until(() => !$('#j-wait').classList.contains('hidden'), 6000);
       const h = await api('join', { code: c.code, name: 'Erta host', host: c.host, cid: 'erta-host-1234' });
@@ -257,7 +274,7 @@
     const countFetch = () => { calls = 0; window.fetch = (...a) => { if (String(a[0]).includes('/api/join')) calls++; return origFetch(...a); }; };
 
     await t('26. Soat farqi (telefon soati 1 soat oldinda): serverga to\'xtovsiz so\'rov yuborilmaydi', async () => {
-      const c = await api('create', { title: 'Soat', startAt: Date.now() + 3600e3 });
+      const c = await api('create', { title: 'Soat', startAt: Date.now() + 3600e3, waiting: false });
       localStorage.setItem('name', JSON.stringify('Soat testi'));
       openMeeting(c.code);
       await until(() => waiting, 6000);
@@ -268,7 +285,7 @@
     });
 
     await t('27. Kutish paytida internet uzilsa — qayta urinadi va qo\'shiladi', async () => {
-      const c = await api('create', { title: 'Uzilish', startAt: Date.now() });
+      const c = await api('create', { title: 'Uzilish', startAt: Date.now(), waiting: false });
       let failOnce = true;
       window.fetch = (...a) => { if (failOnce && String(a[0]).includes('/api/join')) { failOnce = false; return Promise.reject(new TypeError('offline')); } return origFetch(...a); };
       waiting = true; ctx = null;
@@ -279,7 +296,7 @@
     });
 
     await t('28. Video serverga ulanib bo\'lmasa — xabar, cheksiz takrorlanmaydi', async () => {
-      const c = await api('create', { title: 'Ulanmaydi', startAt: Date.now() });
+      const c = await api('create', { title: 'Ulanmaydi', startAt: Date.now(), waiting: false });
       const Orig = LK.Room; // connect har bir obyektda aniqlangan — sinf orqali almashtiramiz
       LK.Room = class extends Orig { constructor(o) { super(o); this.connect = () => Promise.reject(new Error('sinov')); } };
       try {
@@ -291,7 +308,7 @@
     });
 
     await t('29. Kutilmagan uzilish — avtomatik qayta ulanadi', async () => {
-      const c = await api('create', { title: 'Qayta ulanish', startAt: Date.now() });
+      const c = await api('create', { title: 'Qayta ulanish', startAt: Date.now(), waiting: false });
       openMeeting(c.code);
       await until(() => inMeeting && room?.state === 'connected', 10000);
       const old = room;
@@ -303,14 +320,130 @@
     });
 
     await t('30. Kutish paytida bosh sahifaga o\'tilsa — kechikkan javob xatoga olib kelmaydi', async () => {
-      const c = await api('create', { title: 'Kech javob', startAt: Date.now() });
+      const c = await api('create', { title: 'Kech javob', startAt: Date.now(), waiting: false });
       window.fetch = (...a) => String(a[0]).includes('/api/join') ? sleep(1500).then(() => origFetch(...a)) : origFetch(...a);
       openMeeting(c.code); await sleep(200); goHome();
       await sleep(2500); window.fetch = origFetch;
       ok(visible() === 'screen-home' && !inMeeting, `ekran=${visible()} inMeeting=${inMeeting}`);
     });
 
-    for (const b of bots) await b.close();
+    // ---- Xavfsizlik (Zoom darajasi) ----
+    const hostMeeting = async (extra = {}) => {
+      const c = await api('create', { title: 'Xavfsizlik', startAt: Date.now(), ...extra });
+      saveHostKey(c.room, c.host); localStorage.setItem('name', JSON.stringify('Xavf Host'));
+      openMeeting(c.code);
+      await until(() => inMeeting && room?.state === 'connected' && me.isHost, 12000, 'host kira olmadi');
+      return c;
+    };
+    await t('31. Kutish zali: mehmon kutadi, host ro\'yxatda ko\'radi va "Qo\'shish" bilan qabul qiladi', async () => {
+      const c = await hostMeeting();
+      const g = await bot('Kutuvchi Ali', { admit: false }); bots.push(g);
+      await until(() => $$('#lobby-list li').length === 1 && !$('#lobby-box').classList.contains('hidden'), 8000, 'kutish zali ro\'yxatda yo\'q');
+      ok($('#lobby-list').textContent.includes('Kutuvchi Ali'));
+      $('#lobby-list button[data-a=admit]').click();
+      await until(() => g.lobbyRoom.localParticipant.attributes?.admitted === '1', 8000, 'qabul belgisi kelmadi');
+      const j = await api('join', { code: c.code, name: 'Kutuvchi Ali', cid: g.cid });
+      ok(j.token && !j.lobby, 'qabul qilingandan keyin token berilmadi');
+      await g.close();
+    });
+
+    await t('32. Kutish zali: "Rad etish" — mehmon uziladi va qayta kira olmaydi', async () => {
+      const g = await bot('Begona', { admit: false }); bots.push(g);
+      let reason = null; g.lobbyRoom.on(LK.RoomEvent.Disconnected, (r) => { reason = r; });
+      await until(() => $$('#lobby-list li').length === 1, 8000);
+      $('#lobby-list button[data-a=deny]').click();
+      await until(() => reason === LK.DisconnectReason.PARTICIPANT_REMOVED, 8000, 'uzilmadi');
+      const j = await api('join', { code: ctx.code, name: 'Begona', cid: g.cid });
+      ok(j.status === 403, JSON.stringify(j));
+    });
+
+    await t('33. Xavfsizlik menyusi: qulflash → yangi odam 423; qulfni ochish → kira oladi', async () => {
+      $('#btn-sec').click();
+      [...$$('#menu-pop button')].find((b) => b.textContent.includes('qulflash')).click();
+      await until(() => !$('#lock-ind').classList.contains('hidden'), 6000, 'qulf belgisi yo\'q');
+      const j = await api('join', { code: ctx.code, name: 'Kech', cid: 'kech-qolgan-1234' });
+      ok(j.status === 423, JSON.stringify(j));
+      $('#btn-sec').click();
+      [...$$('#menu-pop button')].find((b) => b.textContent.includes('qulflash')).click();
+      await until(() => $('#lock-ind').classList.contains('hidden'), 6000);
+      const j2 = await api('join', { code: ctx.code, name: 'Kech', cid: 'kech-qolgan-1234' });
+      ok(j2.lobby || j2.token, JSON.stringify(j2));
+    });
+
+    await t('34. Ism qulfi: qatnashchi ismini almashtirsa ham eski ismi ko\'rinadi', async () => {
+      const b = await bot('Asl Ism'); bots.push(b);
+      await until(() => [...roster.values()].some((p) => p.name === 'Asl Ism'), 8000);
+      await b.room.localParticipant.setName('Tashkilotchi').catch(() => {});
+      await sleep(1500); syncRoster(); renderAll();
+      ok(roster.get(b.identity)?.name === 'Asl Ism', `ism: ${roster.get(b.identity)?.name}`);
+      ok(!roster.get(b.identity)?.host, 'host bo\'lib qoldi');
+    });
+
+    await t('35. Chiqarilgan qatnashchi qayta kira olmaydi (403)', async () => {
+      const b = bots[bots.length - 1];
+      const r = await api('host', { code: ctx.code, host: ctx.host, action: 'kick', identity: b.identity });
+      ok(r.ok, JSON.stringify(r));
+      await until(() => b.reason === LK.DisconnectReason.PARTICIPANT_REMOVED, 8000);
+      const j = await api('join', { code: ctx.code, name: 'Asl Ism', cid: b.cid || 'x' });
+      ok(j.status === 403, JSON.stringify(j));
+      await leave(true);
+    });
+
+    await t('36. Mehmon sahifasi kutish zalida → host qabul qiladi → avtomatik kiradi', async () => {
+      const c = await api('create', { title: 'Mehmon KZ', startAt: Date.now() });
+      const h = await api('join', { code: c.code, name: 'Bot Host', host: c.host, cid: 'bot-host-cid-1' });
+      const hr = new LK.Room(); await hr.connect(h.url, h.token);
+      localStorage.removeItem('hosts'); localStorage.setItem('name', JSON.stringify('Sahifa Mehmon'));
+      openMeeting(c.code);
+      await until(() => $('#j-wait').textContent.includes('Kutish zalidasiz'), 8000, 'kutish zali ekrani yo\'q');
+      ok(!inMeeting);
+      const l = await api('host', { code: c.code, host: c.host, action: 'lobby' });
+      ok(l.lobby?.length === 1 && l.lobby[0].name === 'Sahifa Mehmon', JSON.stringify(l));
+      await api('host', { code: c.code, host: c.host, action: 'admit', identity: l.lobby[0].identity });
+      await until(() => inMeeting && room?.state === 'connected', 10000, 'qabul qilingach kirmadi');
+      ok(!me.isHost && !lobbyRoom, 'kutish zali ulanishi yopilmadi');
+      await leave(false); await hr.disconnect();
+    });
+
+    await t('37. E2EE: havolada kalit (#k=), shifrlangan video ikki tomonda ko\'rinadi', async () => {
+      goHome();
+      $('#c-name').value = 'Shifr Host'; $('#c-title').value = 'Maxfiy';
+      document.querySelector('input[name=when][value=now]').click();
+      $('#c-waiting').checked = false; $('#c-e2ee').checked = true;
+      $('#form-create').requestSubmit();
+      await until(() => visible() === 'screen-created', 8000);
+      $('#c-e2ee').checked = false; $('#c-waiting').checked = true;
+      const link = $('#cr-link').textContent;
+      ok(/#k=[0-9a-f]{32,}/.test(link), 'havolada kalit yo\'q');
+      const key = link.split('#k=')[1];
+      $('#cr-start').click();
+      await until(() => inMeeting && room?.state === 'connected', 12000);
+      ok(room.isE2EEEnabled, 'E2EE yoqilmadi'); ok(!$('#e2ee-ind').classList.contains('hidden'));
+      const b = await bot('Shifr Bot', { e2eeKey: key }); bots.push(b);
+      await until(() => { const v = $(`#tile-${b.identity} video`); return v?._lkTrack && v.videoWidth > 0; }, 15000, 'shifrlangan video ochilmadi');
+      await leave(true);
+    });
+
+    await t('38. E2EE havolasi kalitsiz ochilsa — tushunarli xabar, kirmaydi', async () => {
+      const c = await api('create', { title: 'Kalitsiz', startAt: Date.now(), e2ee: true, waiting: false });
+      openMeeting(c.code);
+      ok($('#j-error').textContent.includes('kalit'), $('#j-error').textContent);
+      await sleep(1500); ok(!inMeeting);
+    });
+
+    await t("39. Kirish so'rovi ketayotganda boshqa yig'ilish ochilsa — u ham avtomatik kiradi", async () => {
+      const a = await api('create', { title: 'Birinchi', startAt: Date.now(), waiting: false });
+      const b = await api('create', { title: 'Ikkinchi', startAt: Date.now(), waiting: false });
+      localStorage.setItem('name', JSON.stringify('Tez foydalanuvchi'));
+      window.fetch = (...x) => String(x[0]).includes('/api/join') ? sleep(1500).then(() => origFetch(...x)) : origFetch(...x);
+      openMeeting(a.code); await sleep(200); goHome(); openMeeting(b.code);
+      await until(() => inMeeting && room?.state === 'connected', 12000, 'ikkinchi yig\'ilishga kirmadi');
+      window.fetch = origFetch;
+      ok($('#meet-title').textContent === 'Ikkinchi', $('#meet-title').textContent);
+      await leave(false);
+    });
+
+    for (const b of bots) await b.close?.();
     goHome();
     const out = `${pass} o'tdi, ${fail} xato\n` + R.join('\n');
     console.log(out);
