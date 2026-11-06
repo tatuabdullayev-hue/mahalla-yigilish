@@ -78,6 +78,7 @@ async function verify(msg) {
 }
 async function latestUrl() {
   const r = await fetch(`https://ntfy.sh/${TOPIC}/json?poll=1&since=all`, { cache: 'no-store' });
+  if (r.status === 429) throw Object.assign(new Error('limit'), { limited: true });
   const lines = (await r.text()).split('\n').filter(Boolean);
   let best = null;
   for (const l of lines) {
@@ -94,21 +95,28 @@ async function alive(u) {
   catch { return false; } finally { clearTimeout(t); }
 }
 let tries = 0;
+function open(u) {
+  status('Ochilmoqda…');
+  LS.set('last', u);
+  const sess = LS.get('sess');
+  location.replace(`${u}/?l=1${inApp ? '&app=1' : ''}${sess ? '#s=' + sess : ''}`);
+}
 async function go() {
   $('#retry').classList.add('hidden');
   status(tries ? "Server hozircha o'chiq. Kutilmoqda…" : 'Serverga ulanmoqda…');
+  // 1) Oxirgi ishlagan manzil (ntfy'ga so'rov yubormasdan)
+  const last = LS.get('last');
+  if (last && await alive(last)) return open(last);
+  // 2) ntfy.sh dan joriy imzolangan manzil
+  let limited = false;
   try {
     const u = await latestUrl();
-    if (u && await alive(u)) {
-      status('Ochilmoqda…');
-      const sess = LS.get('sess');
-      location.replace(`${u}/?l=1${inApp ? '&app=1' : ''}${sess ? '#s=' + sess : ''}`);
-      return;
-    }
-  } catch { /* tarmoq xatosi */ }
+    if (u && u !== last && await alive(u)) return open(u);
+  } catch (e) { limited = e?.limited; }
   tries++;
-  if (tries >= 3) { status("Server hozircha o'chiq. Yig'ilish boshlanganda qayta urinib ko'ring.", false); $('#retry').classList.remove('hidden'); }
-  setTimeout(go, 5000);
+  if (tries >= 2) { status("Server hozircha o'chiq. Yig'ilish boshlanganda qayta urinib ko'ring.", false); $('#retry').classList.remove('hidden'); }
+  // So'rovlar oralig'i asta uzayadi: 5, 10, 20, 40, 60 soniya
+  setTimeout(go, Math.min(60000, 5000 * 2 ** Math.min(tries - 1, 4)) * (limited ? 2 : 1));
 }
 $('#retry').onclick = () => location.reload();
 go();
