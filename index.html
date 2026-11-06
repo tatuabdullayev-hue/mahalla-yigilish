@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mahalla Yig'ilish</title>
+<meta name="theme-color" content="#0b5cff">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root { --blue: #0b5cff; --ink: #1d2433; --muted: #6b7385; --bg: #f4f6fb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: grid; place-items: center; padding: 16px; }
+  .card { width: 100%; max-width: 380px; background: #fff; border-radius: 18px; padding: 32px 24px 24px; text-align: center;
+          box-shadow: 0 10px 40px rgba(20, 40, 90, .08); }
+  .logo { width: 72px; height: 72px; border-radius: 18px; }
+  h1 { font-size: 20px; margin: 14px 0 4px; }
+  #status { color: var(--muted); min-height: 46px; margin: 8px 0 18px; }
+  .spin { width: 28px; height: 28px; margin: 0 auto 6px; border: 3px solid #dbe4ff; border-top-color: var(--blue); border-radius: 50%;
+          animation: r .9s linear infinite; }
+  .spin.off { visibility: hidden; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  .btn { display: inline-block; border: 0; border-radius: 10px; padding: 10px 18px; font: inherit; font-weight: 600; cursor: pointer;
+         text-decoration: none; background: var(--blue); color: #fff; }
+  .btn.ghost { background: #eef2ff; color: var(--blue); }
+  .hidden { display: none !important; }
+  .dl { margin-top: 18px; padding-top: 16px; border-top: 1px solid #eceff5; font-size: 13px; color: var(--muted); }
+  .dl a { color: var(--blue); font-weight: 600; text-decoration: none; margin: 0 6px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<main class="card">
+  <img class="logo" src="icon-192.png" alt="">
+  <h1>Mahalla Yig'ilish</h1>
+  <div class="spin" id="spin"></div>
+  <div id="status">Serverga ulanmoqda…</div>
+  <button class="btn hidden" id="retry">Qayta urinish</button>
+  <div class="dl" id="dl">
+    Ilovani o'rnatish:
+    <a href="https://github.com/tatuabdullayev-hue/mahalla-yigilish/releases/latest/download/MahallaYigilish.apk">📱 Android (APK)</a>
+    <a href="https://github.com/tatuabdullayev-hue/mahalla-yigilish/releases/latest/download/MahallaYigilish.exe">💻 Windows (EXE)</a>
+  </div>
+</main>
+<script>
+// Server manzili (Cloudflare tunnel) har ishga tushganda o'zgaradi. Server yangi manzilni imzolab ntfy.sh ga yuboradi,
+// bu sahifa uni o'qib, imzoni tekshiradi va foydalanuvchini serverga yo'naltiradi.
+const TOPIC = 'mahalla-e210cb34552d314800';
+const PUB = { kty: 'EC', crv: 'P-256', x: 'pKsfwfOCPEb8AITnWzmA_NVDYiL9oUrUuVVjJoB4VF8', y: 'eo627SrMqjGtU4GMNW7XVQipK2dvKNEmN-Ik-IFYnaU' };
+const $ = (s) => document.querySelector(s);
+const status = (t, busy = true) => { $('#status').textContent = t; $('#spin').classList.toggle('off', !busy); };
+const LS = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+             set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
+
+const params = new URLSearchParams(location.search);
+const inApp = params.has('app') || /MahallaApp/.test(navigator.userAgent);
+if (inApp) { $('#dl').classList.add('hidden'); LS.set('inApp', '1'); }
+
+// Ilova raisning ma'lumotini shu yerga saqlab ketadi (#save=...) yoki chiqishda o'chiradi (#logout)
+const h = location.hash;
+if (h.startsWith('#save=')) LS.set('sess', h.slice(6));
+else if (h === '#logout') LS.del('sess');
+if (h) history.replaceState(null, '', location.pathname + location.search);
+
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+let keyP = null;
+async function verify(msg) {
+  try {
+    const { p, s } = JSON.parse(msg);
+    keyP ||= crypto.subtle.importKey('jwk', PUB, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, await keyP, b64(s), new TextEncoder().encode(p));
+    if (!ok) return null;
+    const d = JSON.parse(p);
+    return /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(d.u) ? d : null;
+  } catch { return null; }
+}
+async function latestUrl() {
+  const r = await fetch(`https://ntfy.sh/${TOPIC}/json?poll=1&since=all`, { cache: 'no-store' });
+  const lines = (await r.text()).split('\n').filter(Boolean);
+  let best = null;
+  for (const l of lines) {
+    let m; try { m = JSON.parse(l); } catch { continue; }
+    if (m.event !== 'message') continue;
+    const d = await verify(m.message);
+    if (d && (!best || d.t > best.t)) best = d;
+  }
+  return best?.u || null;
+}
+async function alive(u) {
+  const c = new AbortController(); const t = setTimeout(() => c.abort(), 8000);
+  try { const r = await fetch(`${u}/api/ping`, { signal: c.signal, cache: 'no-store' }); return r.ok && (await r.json()).app === 'mahalla'; }
+  catch { return false; } finally { clearTimeout(t); }
+}
+let tries = 0;
+async function go() {
+  $('#retry').classList.add('hidden');
+  status(tries ? "Server hozircha o'chiq. Kutilmoqda…" : 'Serverga ulanmoqda…');
+  try {
+    const u = await latestUrl();
+    if (u && await alive(u)) {
+      status('Ochilmoqda…');
+      const sess = LS.get('sess');
+      location.replace(`${u}/?l=1${inApp ? '&app=1' : ''}${sess ? '#s=' + sess : ''}`);
+      return;
+    }
+  } catch { /* tarmoq xatosi */ }
+  tries++;
+  if (tries >= 3) { status("Server hozircha o'chiq. Yig'ilish boshlanganda qayta urinib ko'ring.", false); $('#retry').classList.remove('hidden'); }
+  setTimeout(go, 5000);
+}
+$('#retry').onclick = () => location.reload();
+go();
+</script>
+</body>
+</html>
