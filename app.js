@@ -745,6 +745,7 @@ document.addEventListener('keydown', (e) => {
   const q = new URLSearchParams(location.search);
   const code = q.get('m');
   if (code && q.get('h')) { const m = decodeCode(code); if (m) saveHostKey(m.r, q.get('h')); }
+  if (q.has('app') || /MahallaApp/.test(navigator.userAgent)) $('#apps-card').classList.add('hidden');
   if (code && decodeCode(code)) openMeeting(code);
   else goHome();
 })();
