@@ -280,3 +280,11 @@ body:not(.is-admin) .host-only { display: none !important; }
 @media (max-width: 860px) {
   .start { grid-template-columns: minmax(0, 1fr); padding: 16px; }
 }
+/* Kichik telefonlar (≤480px): asboblar paneli sig'ishi uchun */
+@media (max-width: 480px) {
+  .toolbar { padding: 4px 6px; padding-bottom: max(4px, env(safe-area-inset-bottom)); gap: 4px; }
+  .tb-group { gap: 0; }
+  .tb { padding: 8px 4px; }
+  .end-btn { padding: 8px 10px; font-size: 13px; }
+  .meet-top .mt-title { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
