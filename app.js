@@ -100,6 +100,11 @@ function saveMine(entry) {
   const list = myMeetings().filter((x) => x.r !== entry.r);
   list.unshift(entry); store.set('my', list.slice(0, 20));
 }
+function deviceId() {
+  let id = store.get('cid');
+  if (!id) { id = [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join(''); store.set('cid', id); }
+  return id;
+}
 const hostKeyFor = (r) => (store.get('hosts') || {})[r] || null;
 function saveHostKey(r, k) { const h = store.get('hosts') || {}; h[r] = k; store.set('hosts', h); }
 function renderMine() {
@@ -176,16 +181,17 @@ $('#cr-home').onclick = goHome;
 
 // ================= HAVOLA ORQALI KIRISH / KUTISH =================
 function goHome() {
-  clearTimeout(waitTimer); clearInterval(countInt);
+  clearTimeout(waitTimer); clearInterval(countInt); waiting = false;
   history.replaceState(null, '', BASE_PATH);
   ctx = null;
   $('#c-name').value = store.get('name') || '';
   renderMine();
   show('#screen-home');
 }
-function openMeeting(code, auto = false) {
+function openMeeting(code, auto = false, manual = false) {
   const m = decodeCode(code);
   if (!m) return goHome();
+  clearTimeout(waitTimer); clearInterval(countInt); waiting = false;
   ctx = { code, m, host: hostKeyFor(m.r) };
   history.replaceState(null, '', `${BASE_PATH}?m=${code}`);
   $('#j-title').textContent = m.t;
@@ -196,34 +202,48 @@ function openMeeting(code, auto = false) {
   $('#form-join').classList.remove('hidden');
   $('#j-btn').textContent = ctx.host ? "Yig'ilishni boshlash" : "Qo'shilish";
   show('#screen-join');
-  if ((auto || $('#j-name').value) && $('#j-name').value) tryJoin();
+  if (!manual && $('#j-name').value) tryJoin();
 }
 $('#j-home').onclick = goHome;
 $('#form-join').onsubmit = (e) => { e.preventDefault(); unlockAudio(); store.set('name', $('#j-name').value.trim()); tryJoin(); };
 
+let joining = false, waiting = false, lastTry = 0, clockSkew = 0;
 async function tryJoin() {
   clearTimeout(waitTimer);
+  if (joining || inMeeting || !ctx) return;
   const name = $('#j-name').value.trim() || store.get('name');
   if (!name) return;
+  const myCtx = ctx;
+  joining = true; lastTry = Date.now();
   $('#j-btn').disabled = true; $('#j-error').textContent = '';
-  const r = await api('join', { code: ctx.code, name, host: ctx.host });
+  const r = await api('join', { code: myCtx.code, name, host: myCtx.host, cid: deviceId() });
+  joining = false;
   $('#j-btn').disabled = false;
-  if (r.error) { $('#j-error').textContent = r.error; return; }
-  if (r.wait) return showWaiting(r.startAt);
+  if (ctx !== myCtx || inMeeting) return; // foydalanuvchi boshqa sahifaga o'tib ketgan
+  if (r.error) {
+    $('#j-error').textContent = r.error;
+    // Kutish paytida internet uzilsa — to'xtab qolmasdan qayta urinamiz
+    if (waiting || /Internet|Xatolik \(5/.test(r.error)) waitTimer = setTimeout(tryJoin, 10000);
+    return;
+  }
+  if (r.wait) { if (r.now) clockSkew = r.now - Date.now(); return showWaiting(r.startAt); }
+  waiting = false;
   clearInterval(countInt);
   if (!ctx.host) saveMine({ code: ctx.code, r: ctx.m.r, t: ctx.m.t, s: ctx.m.s });
   enterMeeting(r, name);
 }
 function showWaiting(startAt) {
+  waiting = true;
   $('#form-join').classList.add('hidden');
   const w = $('#j-wait'); w.classList.remove('hidden');
   clearInterval(countInt);
   const tick = () => {
-    const left = Math.max(0, startAt - Date.now());
+    const left = Math.max(0, startAt - (Date.now() + clockSkew)); // server soati bo'yicha
     const h = Math.floor(left / 3600e3), mi = Math.floor(left % 3600e3 / 60e3), s = Math.floor(left % 60e3 / 1000);
     w.innerHTML = `Yig'ilish <b>${fmtWhen(startAt)}</b> da boshlanadi.<div class="countdown">${h ? h + ':' : ''}${pad(mi)}:${pad(s)}</div>
       Vaqti kelganda (yoki tashkilotchi ertaroq boshlasa) <b>avtomatik qo'shilasiz</b>. Sahifani yopmang.`;
-    if (left <= EARLY_MS) { clearInterval(countInt); tryJoin(); }
+    // Vaqti keldi — so'raymiz (soat farqi bo'lsa ham 10 soniyada bir martadan ko'p emas)
+    if (left <= EARLY_MS && Date.now() - lastTry > 10000) tryJoin();
   };
   tick(); countInt = setInterval(tick, 1000);
   waitTimer = setTimeout(tryJoin, 20000); // host ertaroq boshlagan bo'lsa
@@ -304,7 +324,13 @@ async function enterMeeting(r, name) {
     .on(E.Disconnected, (reason) => onDisconnected(reason));
 
   try { await room.connect(r.url, r.token); }
-  catch (e) { inMeeting = false; room = null; toast(`Ulanib bo'lmadi: ${e.message}`, 6000); return openMeeting(ctx.code); }
+  catch (e) {
+    inMeeting = false; room?.removeAllListeners(); room = null;
+    openMeeting(ctx.code, false, true); // avtomatik takrorlamaymiz — foydalanuvchi o'zi bosadi
+    $('#j-error').textContent = "Video serverga ulanib bo'lmadi. Internetni tekshirib, qayta bosing.";
+    return;
+  }
+  autoRejoins = 0;
   syncRoster(); renderAll();
   try { await room.localParticipant.setMicrophoneEnabled(true); } catch { toast("Mikrofonga ruxsat berilmadi"); }
   try { await room.localParticipant.setCameraEnabled(true); } catch { toast("Kameraga ruxsat berilmadi"); }
@@ -328,6 +354,7 @@ function refreshTile(id) {
   if (t) t.attach(v);
 }
 
+let autoRejoins = 0;
 async function onDisconnected(reason) {
   const R = LK.DisconnectReason || {};
   const wasLeaving = leaving;
@@ -336,8 +363,14 @@ async function onDisconnected(reason) {
   let text = 'Aloqa uzildi';
   if (reason === R.ROOM_DELETED) text = "Tashkilotchi yig'ilishni yakunladi";
   else if (reason === R.PARTICIPANT_REMOVED) text = "Tashkilotchi sizni yig'ilishdan chiqardi";
-  else if (reason === R.DUPLICATE_IDENTITY) text = "Siz boshqa oynadan kirdingiz";
+  else if (reason === R.DUPLICATE_IDENTITY) text = "Siz boshqa oynadan (yoki qurilmadan) kirdingiz";
   showLeft(text, reason !== R.PARTICIPANT_REMOVED);
+  const final = [R.ROOM_DELETED, R.PARTICIPANT_REMOVED, R.DUPLICATE_IDENTITY, R.CLIENT_INITIATED].includes(reason);
+  if (!final && autoRejoins < 3) {
+    autoRejoins++;
+    $('#left-text').textContent = 'Aloqa uzildi — qayta ulanmoqda…';
+    setTimeout(() => { if (!inMeeting && ctx && $('#screen-left').offsetParent !== null) openMeeting(ctx.code, true); }, 3000);
+  }
 }
 function cleanupMeeting() {
   if (recorder) stopRecording();
